@@ -52,3 +52,42 @@ func TestNewStdLogger_NilFallsBackToDefault(t *testing.T) {
 	// Must not panic with a nil logger.
 	NewStdLogger(nil).Printf("no logger set: %d", 1)
 }
+
+// TestStdLoggerFunc_ClassifiesLevel verifies the LevelFunc controls the emitted
+// level per message: benign messages can be demoted while faults stay at error.
+func TestStdLoggerFunc_ClassifiesLevel(t *testing.T) {
+	classify := func(msg string) slog.Level {
+		if strings.Contains(msg, "benign") {
+			return slog.LevelInfo
+		}
+		return slog.LevelError
+	}
+
+	t.Run("demoted", func(t *testing.T) {
+		logger, buf := bufferLogger()
+		NewStdLoggerFunc(logger, classify).Printf("a benign %s", "disconnect")
+		out := buf.String()
+		if !strings.Contains(out, "level=INFO") {
+			t.Errorf("expected INFO level, got: %q", out)
+		}
+	})
+
+	t.Run("kept at error", func(t *testing.T) {
+		logger, buf := bufferLogger()
+		NewStdLoggerFunc(logger, classify).Println("panic serving", errors.New("boom"))
+		out := buf.String()
+		if !strings.Contains(out, "level=ERROR") {
+			t.Errorf("expected ERROR level, got: %q", out)
+		}
+	})
+}
+
+// TestStdLoggerFunc_NilClassifierIsError confirms a nil LevelFunc keeps the
+// always-error behavior (so NewStdLogger is unchanged).
+func TestStdLoggerFunc_NilClassifierIsError(t *testing.T) {
+	logger, buf := bufferLogger()
+	NewStdLoggerFunc(logger, nil).Printf("anything")
+	if !strings.Contains(buf.String(), "level=ERROR") {
+		t.Errorf("nil classifier should emit at error level, got: %q", buf.String())
+	}
+}
