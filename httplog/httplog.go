@@ -114,6 +114,37 @@ func WithSkipPaths(paths ...string) Option {
 	}
 }
 
+// Proxies is a set of trusted proxy addresses, and the one place the rule for
+// "who is the client" lives.
+//
+// A service needs that answer in more places than the access line -- an audit
+// record of who viewed something, a rate limiter, a notification -- and the
+// naive version of it (take the leftmost X-Forwarded-For entry) returns an
+// address the client chose. Two implementations in one codebase is worse
+// still: they disagree, and only one of them is wrong at a time.
+type Proxies struct {
+	prefixes []netip.Prefix
+}
+
+// NewProxies parses the CIDRs or bare addresses whose X-Forwarded-For may be
+// believed. Entries that do not parse are dropped, so a typo narrows trust
+// rather than widening it. The zero value trusts nothing, which makes
+// ClientIP return the peer address.
+func NewProxies(cidrs ...string) Proxies {
+	var cfg config
+	WithTrustedProxies(cidrs...)(&cfg)
+	return Proxies{prefixes: cfg.trusted}
+}
+
+// ClientIP returns the address to attribute r to: the peer, unless the peer is
+// one of these proxies, in which case the rightmost X-Forwarded-For entry that
+// is not itself trusted -- the closest hop we did not supply, and so the least
+// forgeable address available. Entries to its left were written by hops further
+// out, including the client, and can say anything.
+func (p Proxies) ClientIP(r *http.Request) string {
+	return clientIP(r, p.prefixes)
+}
+
 // Middleware returns middleware that logs one line per request to logger.
 //
 // Wrapping goes through httpsnoop, which reproduces whichever optional

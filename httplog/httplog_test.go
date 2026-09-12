@@ -438,3 +438,111 @@ func TestWithAttrsAccumulates(t *testing.T) {
 		t.Errorf("want both contributions, got: %v", line)
 	}
 }
+
+// A service often needs the client address for something other than the access
+// line -- an audit record, a rate limiter, a notification -- and must not
+// reimplement the trust rule to get it. Two hand-rolled versions of this
+// resolve differently, and the naive one (leftmost entry, no trust check) hands
+// every caller an address the client chose.
+func TestProxiesClientIP(t *testing.T) {
+	cf := "104.16.0.0/13"
+	docker := "172.21.0.0/16"
+
+	tests := []struct {
+		name    string
+		trusted []string
+		peer    string
+		xff     string
+		want    string
+	}{
+		{
+			name:    "no trusted proxies ignores the header",
+			trusted: nil,
+			peer:    "198.51.100.4:5000",
+			xff:     "10.0.0.1",
+			want:    "198.51.100.4",
+		},
+		{
+			name:    "untrusted peer ignores the header",
+			trusted: []string{docker},
+			peer:    "203.0.113.9:5000",
+			xff:     "10.0.0.1",
+			want:    "203.0.113.9",
+		},
+		{
+			name:    "one trusted hop yields the client",
+			trusted: []string{docker},
+			peer:    "172.21.0.9:5000",
+			xff:     "203.0.113.7",
+			want:    "203.0.113.7",
+		},
+		{
+			name:    "two trusted hops skip past both",
+			trusted: []string{docker, cf},
+			peer:    "172.21.0.9:5000",
+			xff:     "203.0.113.7, 104.16.5.5",
+			want:    "203.0.113.7",
+		},
+		{
+			name:    "a client-supplied prefix cannot reach past the trusted hops",
+			trusted: []string{docker, cf},
+			peer:    "172.21.0.9:5000",
+			xff:     "9.9.9.9, 203.0.113.7, 104.16.5.5",
+			want:    "203.0.113.7",
+		},
+		{
+			name:    "garbage entries are skipped, not returned",
+			trusted: []string{docker},
+			peer:    "172.21.0.9:5000",
+			xff:     "not-an-ip, 203.0.113.7",
+			want:    "203.0.113.7",
+		},
+		{
+			name:    "no header falls back to the peer",
+			trusted: []string{docker},
+			peer:    "172.21.0.9:5000",
+			xff:     "",
+			want:    "172.21.0.9",
+		},
+		{
+			name:    "an unparseable CIDR is dropped, so nothing is trusted by accident",
+			trusted: []string{"not-a-cidr"},
+			peer:    "172.21.0.9:5000",
+			xff:     "203.0.113.7",
+			want:    "172.21.0.9",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "http://example.test/", nil)
+			r.RemoteAddr = tt.peer
+			if tt.xff != "" {
+				r.Header.Set("X-Forwarded-For", tt.xff)
+			}
+			if got := httplog.NewProxies(tt.trusted...).ClientIP(r); got != tt.want {
+				t.Errorf("ClientIP = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The middleware and the exported helper must agree: two answers to "who is the
+// client" is the bug this exists to prevent.
+func TestProxiesClientIPMatchesTheAccessLine(t *testing.T) {
+	var buf bytes.Buffer
+	trusted := []string{"172.21.0.0/16", "104.16.0.0/13"}
+	h := httplog.Middleware(newTestLogger(&buf), httplog.WithTrustedProxies(trusted...))(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	r := httptest.NewRequest("GET", "http://example.test/", nil)
+	r.RemoteAddr = "172.21.0.9:5000"
+	r.Header.Set("X-Forwarded-For", "203.0.113.7, 104.16.5.5")
+	serve(h, r)
+
+	logged, _ := oneLine(t, &buf)["remote_addr"].(string)
+	direct := httplog.NewProxies(trusted...).ClientIP(r)
+	if logged != direct {
+		t.Errorf("access line logged %q but ClientIP returned %q", logged, direct)
+	}
+}
