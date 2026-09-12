@@ -62,7 +62,7 @@ func serve(h http.Handler, r *http.Request) *httptest.ResponseRecorder {
 func TestLogsTheConventionalFields(t *testing.T) {
 	var buf bytes.Buffer
 	h := httplog.Middleware(newTestLogger(&buf))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte("hello"))
+		_, _ = w.Write([]byte("hello"))
 	}))
 
 	r := httptest.NewRequest("GET", "http://example.test/articles/7", nil)
@@ -131,7 +131,7 @@ func TestStatusAndBytes(t *testing.T) {
 	}{
 		{
 			name:       "explicit status and body",
-			handler:    func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(404); w.Write([]byte("nope")) },
+			handler:    func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(404); _, _ = w.Write([]byte("nope")) },
 			wantStatus: 404,
 			wantBytes:  4,
 		},

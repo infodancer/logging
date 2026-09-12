@@ -1,0 +1,24 @@
+name: CI
+
+# Thin caller: the static-analysis quartet (vet/fmt/lint/govulncheck) and the
+# test job live in infodancer/workflows so the definition and action pins stay
+# identical across repos. Nothing here needs a service container, so tests run
+# there too.
+#
+# httplog is listed explicitly. It is a nested module with its own go.mod --
+# that is the point, so services that serve no HTTP do not take on httpsnoop --
+# and a root-only matrix would never build or test it.
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  ci:
+    uses: infodancer/workflows/.github/workflows/go-ci.yml@v0
+    with:
+      modules: '[".", "httplog"]'
+      # Both modules move in lockstep; a disagreement is a mistake, not a
+      # deliberate split.
+      check_go_consistency: true
