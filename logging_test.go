@@ -206,3 +206,65 @@ func TestDebugWriter(t *testing.T) {
 		t.Errorf("expected data in log: %s", output)
 	}
 }
+
+func TestNewLoggerTo_WritesToWriter(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLoggerTo(&buf, "info")
+	logger.Info("test message")
+
+	output := buf.String()
+	if !strings.Contains(output, "msg=\"test message\"") {
+		t.Errorf("expected the message in the given writer, got: %s", output)
+	}
+	if !strings.Contains(output, "level=info") {
+		t.Errorf("expected lowercase level=info, got: %s", output)
+	}
+}
+
+func TestNewLoggerTo_LowercaseLevels(t *testing.T) {
+	// The lowercase level is what Loki's logfmt parser reads as detected_level,
+	// so assert it against the constructor itself rather than a hand-built
+	// handler that only resembles it.
+	tests := []struct {
+		level string
+		log   func(*slog.Logger)
+		want  string
+	}{
+		{"debug", func(l *slog.Logger) { l.Debug("m") }, "level=debug"},
+		{"info", func(l *slog.Logger) { l.Info("m") }, "level=info"},
+		{"info", func(l *slog.Logger) { l.Warn("m") }, "level=warn"},
+		{"info", func(l *slog.Logger) { l.Error("m") }, "level=error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			var buf bytes.Buffer
+			tt.log(NewLoggerTo(&buf, tt.level))
+			if got := buf.String(); !strings.Contains(got, tt.want) {
+				t.Errorf("expected %s, got: %s", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestNewLoggerTo_LevelFiltering(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLoggerTo(&buf, "warn")
+	logger.Info("suppressed")
+	if buf.Len() != 0 {
+		t.Errorf("info should be below a warn-level logger, got: %s", buf.String())
+	}
+	logger.Warn("kept")
+	if !strings.Contains(buf.String(), "kept") {
+		t.Errorf("warn should pass a warn-level logger, got: %s", buf.String())
+	}
+}
+
+func TestNewLoggerTo_NilWriterFallsBackToStderr(t *testing.T) {
+	// A nil writer would panic on the first record; the constructor is the only
+	// place that can substitute a sane destination.
+	logger := NewLoggerTo(nil, "info")
+	if logger == nil {
+		t.Fatal("NewLoggerTo returned nil")
+	}
+	logger.Info("to stderr")
+}

@@ -21,26 +21,26 @@ var loggerKey = contextKey{}
 // connectionCounter is used to generate unique connection IDs.
 var connectionCounter atomic.Uint64
 
-// NewLogger creates a new slog.Logger with the specified level.
-// Level values are case-insensitive: debug, info, warn/warning, error.
+// NewLogger creates a new slog.Logger writing to stderr with the specified
+// level. Level values are case-insensitive: debug, info, warn/warning, error.
 // The default level is info.
 func NewLogger(level string) *slog.Logger {
-	var lvl slog.Level
-	switch strings.ToLower(level) {
-	case "debug":
-		lvl = slog.LevelDebug
-	case "info":
-		lvl = slog.LevelInfo
-	case "warn", "warning":
-		lvl = slog.LevelWarn
-	case "error":
-		lvl = slog.LevelError
-	default:
-		lvl = slog.LevelInfo
+	return NewLoggerTo(os.Stderr, level)
+}
+
+// NewLoggerTo is NewLogger with an explicit destination. A service whose
+// entry point already owns an output writer -- a daemon that hands its tests
+// an io.Discard, a command that writes to a buffer -- routes logging through
+// that writer instead of reaching past it to stderr. A nil writer means
+// stderr, so a zero value behaves like NewLogger rather than panicking on the
+// first record.
+func NewLoggerTo(w io.Writer, level string) *slog.Logger {
+	if w == nil {
+		w = os.Stderr
 	}
 
 	opts := &slog.HandlerOptions{
-		Level: lvl,
+		Level: parseLevel(level),
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == slog.LevelKey {
 				a.Value = slog.StringValue(strings.ToLower(a.Value.String()))
@@ -48,8 +48,25 @@ func NewLogger(level string) *slog.Logger {
 			return a
 		},
 	}
-	handler := slog.NewTextHandler(os.Stderr, opts)
-	return slog.New(handler)
+	return slog.New(slog.NewTextHandler(w, opts))
+}
+
+// parseLevel maps a case-insensitive level name to its slog.Level. Anything
+// unrecognized, the empty string included, is info: a typo in a config file
+// should not silence a service.
+func parseLevel(level string) slog.Level {
+	switch strings.ToLower(level) {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 // WithConnection returns a new logger with connection-specific attributes.
