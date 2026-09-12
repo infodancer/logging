@@ -347,3 +347,94 @@ func TestErrorLog(t *testing.T) {
 		t.Errorf("msg = %v, want the server's error text", line["msg"])
 	}
 }
+
+// A service has fields of its own worth putting on the request it just
+// served -- how long a search spent embedding, which backend answered. Those
+// belong on the access line, where they sit beside the status and the total
+// duration, rather than on a second record nothing can join to this one.
+func TestWithAttrs(t *testing.T) {
+	var buf bytes.Buffer
+	h := httplog.Middleware(newTestLogger(&buf),
+		httplog.WithAttrs(func(ctx context.Context) []slog.Attr {
+			return []slog.Attr{
+				slog.Float64("embed_ms", 310.5),
+				slog.Int("fts_calls", 5),
+			}
+		}),
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+
+	serve(h, httptest.NewRequest("GET", "http://example.test/search", nil))
+
+	line := oneLine(t, &buf)
+	if got, want := line["embed_ms"], 310.5; got != want {
+		t.Errorf("embed_ms = %v, want %v", got, want)
+	}
+	if got, want := line["fts_calls"], float64(5); got != want {
+		t.Errorf("fts_calls = %v, want %v", got, want)
+	}
+	// The conventional fields are still there: extra attributes add to the
+	// schema, they do not replace it.
+	if line["method"] != "GET" || line["status"] != float64(200) {
+		t.Errorf("standard fields missing: %v", line)
+	}
+}
+
+// The attributes are gathered after the handler returns, which is what lets a
+// handler fill in numbers it only knows once it has done the work.
+func TestWithAttrsReadAfterHandler(t *testing.T) {
+	type key struct{}
+	var buf bytes.Buffer
+	h := httplog.Middleware(newTestLogger(&buf),
+		httplog.WithAttrs(func(ctx context.Context) []slog.Attr {
+			v, _ := ctx.Value(key{}).(*int)
+			if v == nil {
+				return nil
+			}
+			return []slog.Attr{slog.Int("work", *v)}
+		}),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if v, ok := r.Context().Value(key{}).(*int); ok {
+			*v = 42
+		}
+	}))
+
+	counter := 0
+	r := httptest.NewRequest("GET", "http://example.test/x", nil).
+		WithContext(context.WithValue(context.Background(), key{}, &counter))
+	serve(h, r)
+
+	if got := oneLine(t, &buf)["work"]; got != float64(42) {
+		t.Errorf("work = %v, want the value the handler set (42)", got)
+	}
+}
+
+// An empty or nil return adds nothing, so a request with no numbers to report
+// logs exactly the conventional line.
+func TestWithAttrsEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	h := httplog.Middleware(newTestLogger(&buf),
+		httplog.WithAttrs(func(context.Context) []slog.Attr { return nil }),
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+
+	serve(h, httptest.NewRequest("GET", "http://example.test/x", nil))
+	line := oneLine(t, &buf)
+	if line["method"] != "GET" {
+		t.Errorf("standard fields missing: %v", line)
+	}
+}
+
+// Several callers can each contribute, so a service need not funnel every
+// field through one function.
+func TestWithAttrsAccumulates(t *testing.T) {
+	var buf bytes.Buffer
+	h := httplog.Middleware(newTestLogger(&buf),
+		httplog.WithAttrs(func(context.Context) []slog.Attr { return []slog.Attr{slog.String("a", "1")} }),
+		httplog.WithAttrs(func(context.Context) []slog.Attr { return []slog.Attr{slog.String("b", "2")} }),
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+
+	serve(h, httptest.NewRequest("GET", "http://example.test/x", nil))
+	line := oneLine(t, &buf)
+	if line["a"] != "1" || line["b"] != "2" {
+		t.Errorf("want both contributions, got: %v", line)
+	}
+}

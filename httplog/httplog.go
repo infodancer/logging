@@ -40,6 +40,7 @@ const Message = "http_access"
 type config struct {
 	requestID func(context.Context) string
 	identity  func(context.Context) string
+	attrs     []func(context.Context) []slog.Attr
 	trusted   []netip.Prefix
 	skip      map[string]bool
 }
@@ -58,6 +59,24 @@ func WithRequestID(f func(context.Context) string) Option {
 // something stable and non-secret: a user id or login name, never a token.
 func WithIdentity(f func(context.Context) string) Option {
 	return func(c *config) { c.identity = f }
+}
+
+// WithAttrs supplies extra fields for the access line, gathered from the
+// request's context after the handler returns -- so a handler can report
+// numbers it only knows once it has done the work, such as where a request
+// spent its time.
+//
+// This is how a service puts its own fields on the line that already carries
+// the status and the total duration, instead of emitting a second record that
+// nothing can join back to this one. The function runs on every logged
+// request: keep it cheap, and return nil when there is nothing to add.
+//
+// Passing it more than once accumulates, so separate concerns need not funnel
+// through one function. Names collide at the caller's peril: an attribute
+// repeating one of the conventional field names is emitted alongside it, and
+// which one a parser keeps is its business.
+func WithAttrs(f func(context.Context) []slog.Attr) Option {
+	return func(c *config) { c.attrs = append(c.attrs, f) }
 }
 
 // WithTrustedProxies lists the peers whose X-Forwarded-For header may be
@@ -136,6 +155,9 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 			}
 			if cfg.identity != nil {
 				attrs = appendIfSet(attrs, "identity", cfg.identity(r.Context()))
+			}
+			for _, f := range cfg.attrs {
+				attrs = append(attrs, f(r.Context())...)
 			}
 
 			logger.LogAttrs(r.Context(), slog.LevelInfo, Message, attrs...)
